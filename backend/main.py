@@ -1,10 +1,11 @@
 import pandas as pd
-import re
 import os
 import sys
 import logging
+import time
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side
+import string
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,6 +20,17 @@ def get_output_dir(input_path):
     output_dir = input("请输入保存结果的目录路径（按回车键使用默认输出目录）：").strip()
     return output_dir if output_dir else os.path.dirname(input_path)
 
+def get_rows_per_column():
+    while True:
+        try:
+            rows = int(input("请输入每列显示的行数（不包括标题行）："))
+            if rows > 0:
+                return rows
+            else:
+                print("请输入一个正整数。")
+        except ValueError:
+            print("无效输入，请输入一个整数。")
+
 def clean_and_order_size(size):
     size = str(size).upper().strip()
     if size in SIZE_ORDER:
@@ -29,7 +41,7 @@ def clean_and_order_size(size):
             return SIZE_ORDER.index('XL') + x_count
     return len(SIZE_ORDER)  # 未知尺码放到最后
 
-def process_excel(input_path, output_dir):
+def process_excel(input_path, output_dir, rows_per_column):
     try:
         # 读取Excel文件
         df = pd.read_excel(input_path)
@@ -44,8 +56,9 @@ def process_excel(input_path, output_dir):
 
         # 数据清洗和排序
         df['尺码排序'] = df['尺码'].apply(clean_and_order_size)
-        df = df.sort_values('尺码排序')
-        df = df.drop('尺码排序', axis=1)
+        df['姓名长度'] = df['姓名'].str.len()
+        df = df.sort_values(['尺码排序', '姓名长度', '姓名'])
+        df = df.drop(['尺码排序', '姓名长度'], axis=1)
 
         # 添加序号列
         df['序号'] = range(1, len(df) + 1)
@@ -53,39 +66,49 @@ def process_excel(input_path, output_dir):
 
         # 创建新的Excel文件
         source_filename = os.path.splitext(os.path.basename(input_path))[0]
-        output_filename = f'{source_filename}_sorted.xlsx'
+        output_filename = f'{source_filename}_sorted_formatted.xlsx'
         output_path = os.path.join(output_dir, output_filename)
         
-        # 使用openpyxl保存并格式化
+        # 使用openpyxl创建工作簿和工作表
         wb = Workbook()
         ws = wb.active
         ws.title = "排序后数据"
 
-        # 写入标题
-        for col, header in enumerate(['序号', '姓名', '尺码'], start=1):
-            cell = ws.cell(row=1, column=col, value=header)
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal='center')
+        # 生成动态列组
+        all_columns = list(string.ascii_uppercase) + [f'A{c}' for c in string.ascii_uppercase]
+        column_groups = [all_columns[i:i+3] for i in range(0, len(all_columns), 3)]
 
-        # 写入数据并设置格式
-        for row, (idx, name, size) in enumerate(df.values, start=2):
-            ws.cell(row=row, column=1, value=idx).alignment = Alignment(horizontal='center')
-            ws.cell(row=row, column=2, value=name).alignment = Alignment(horizontal='left')
-            ws.cell(row=row, column=3, value=size).alignment = Alignment(horizontal='center')
+        # 写入标题和数据并设置格式
+        headers = ['序号', '姓名', '尺码']
+        group_index = 0
+        row_index = 0
+        while row_index < len(df):
+            column_group = column_groups[group_index]
+            # 写入标题
+            for col, header in zip(column_group, headers):
+                cell = ws[f'{col}1']
+                cell.value = header
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
 
-        # 调整列宽
-        for column in ws.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(cell.value)
-                except:
-                    pass
-            adjusted_width = (max_length + 2) * 1.2
-            ws.column_dimensions[column_letter].width = adjusted_width
+            # 写入数据
+            end_row = min(row_index + rows_per_column, len(df))
+            for i, row in enumerate(df.iloc[row_index:end_row].values, start=2):
+                for j, value in enumerate(row):
+                    column = column_group[j]
+                    cell = ws[f'{column}{i}']
+                    cell.value = value
+                    cell.alignment = Alignment(horizontal='center' if j != 1 else 'left')
 
+            row_index = end_row
+            group_index += 1
+
+        # 设置列宽
+        for column_group in column_groups[:group_index]:
+            for column in column_group:
+                ws.column_dimensions[column].width = 15
+
+        # 保存文件
         wb.save(output_path)
         logging.info(f"文件已成功保存: {output_path}")
 
@@ -94,18 +117,26 @@ def process_excel(input_path, output_dir):
         raise
 
 def main():
+    start_time = time.time()  # 记录开始时间
+
     logging.info(f"Python version: {sys.version}")
     logging.info(f"Pandas version: {pd.__version__}")
 
     input_path = get_input_path()
     output_dir = get_output_dir(input_path)
+    rows_per_column = get_rows_per_column()
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        process_excel(input_path, output_dir)
+        process_excel(input_path, output_dir, rows_per_column)
         logging.info("处理完成。请检查输出文件。")
     except Exception as e:
         logging.error(f"程序执行失败: {str(e)}")
+
+    end_time = time.time()  # 记录结束时间
+    execution_time = end_time - start_time  # 计算执行时间
+
+    logging.info(f"程序执行时间: {execution_time:.2f} 秒")  # 显示程序执行时间
 
 if __name__ == "__main__":
     main()
